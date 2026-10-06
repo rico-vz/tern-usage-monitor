@@ -27,10 +27,18 @@ With the monitor focused:
 | `←`, `→` | Previous / next account |
 | `a` | Show all accounts |
 | `c` | Toggle compact view in the side panel |
+| `s` | Open or close settings (`Esc` also closes them) |
+
+## Settings
+
+Click **Settings** in the panel footer to choose which accounts to show, how often usage refreshes
+(30 seconds to 15 minutes, or manually), whether to show used or remaining quota, whether bars and
+percentages are colored, the default view, the account order and whether the footer shows the time
+since the last update. Settings are shared by every Tern window.
 
 ## Notes
 
-- Usage refreshes every 60 seconds. Refreshing manually also clears omp's usage cache.
+- Refreshing manually also clears omp's usage cache.
 - Hover an account or quota for the full account name, reset time and reset credits.
 
 If it isn't working, make sure `omp usage --json` works in a terminal and run `tern plugin list`

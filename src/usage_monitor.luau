@@ -32,7 +32,6 @@ export type Snapshot = {
 }
 
 usage_monitor.KIND = "usage-monitor.usage"
-usage_monitor.POLL_MS = 60000
 
 local MAX_BYTES = 4 * 1024 * 1024
 local MAX_ERROR_CHARS = 160

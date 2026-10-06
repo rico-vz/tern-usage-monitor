@@ -5,6 +5,20 @@ local omp_process = {}
 local MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 local LAUNCH_OVERHEAD_MS = 15000
 
+local pending: { [string]: boolean } = {}
+
+local function sweep()
+   -- A plugin reload drops the callbacks of runs in flight, so their output files are removed here instead
+   local ok, names = pcall(tern.fs.list, tern.plugin.data)
+   if not ok then return end
+   for _, name in names do
+      local path = tern.plugin.data .. "\\" .. name
+      if string.match(name, "^usage%-.+%.json$") and not pending[path] then
+         pcall(tern.fs.remove, path)
+      end
+   end
+end
+
 function omp_process.run(argv: { string }, timeout_ms: number, callback: (ProcessResult, WindowCx?) -> ())
    if tern.runtime.os ~= "windows" then
       tern.process.run(argv, { timeout_ms = timeout_ms }, callback)
@@ -13,6 +27,8 @@ function omp_process.run(argv: { string }, timeout_ms: number, callback: (Proces
 
    local token = string.format("%d-%d", os.time(), math.random(1, 1000000000))
    local output = tern.plugin.data .. "\\usage-" .. token .. ".json"
+   sweep()
+   pending[output] = true
    local root = tern.getenv("SystemRoot") or "C:\\Windows"
    local helpers = tern.plugin.dir .. "\\helpers\\windows\\"
    local launcher = {
@@ -38,6 +54,7 @@ function omp_process.run(argv: { string }, timeout_ms: number, callback: (Proces
    }
    tern.process.run(launcher, { timeout_ms = timeout_ms + LAUNCH_OVERHEAD_MS }, function(result: ProcessResult, cx: WindowCx?)
       local ok, text = pcall(tern.fs.read, output, MAX_RESPONSE_BYTES)
+      pending[output] = nil
       pcall(tern.fs.remove, output)
       if result.timed_out or result.status ~= 0 or not ok then
          callback({ status = -1, stdout = "", stderr = "", timed_out = result.timed_out }, cx)

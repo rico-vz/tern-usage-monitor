@@ -1,5 +1,6 @@
 --!strict
 
+local settings = require("./settings")
 local usage_monitor = require("./usage_monitor")
 
 local ui = tern.ui
@@ -7,21 +8,33 @@ local ui = tern.ui
 type Snapshot = usage_monitor.Snapshot
 type Account = usage_monitor.Account
 type Limit = usage_monitor.Limit
+type Settings = settings.Settings
 
 type Block = {
    context: BlockCx,
    account: string,
    compact: boolean,
+   settings_open: boolean,
    rendered: string?,
+}
+
+type Entry = {
+   account: Account,
+   ordinal: number,
+   index: number,
+   name: string,
+   peak: number,
 }
 
 type LimitModel = {
    id: string,
    label: string,
    percent: string,
+   usage: string,
    amount: string,
    reset: string,
    fraction: number?,
+   shown: number?,
    tone: string?,
    error: string?,
 }
@@ -51,22 +64,26 @@ type Model = {
    shown: number,
    selected: string,
    compact: boolean,
+   settings_open: boolean,
+   all_hidden: boolean,
+   settings: Settings,
    accounts: { AccountModel },
 }
 
-local POLL_MS = usage_monitor.POLL_MS
 local TICK_MS = 1000
 local WARN_FRACTION = 0.75
 local BAD_FRACTION = 0.9
 local NARROW_COLS = 60
 local ALL = "all"
+local INTERVAL_LABELS: { [number]: string } = { [30] = "30s", [60] = "1m", [120] = "2m", [300] = "5m", [900] = "15m", [0] = "Manual" }
+local ORDER_LABELS: { [string]: string } = { omp = "omp order", usage = "Highest usage", name = "Name" }
 
 local blocks: { [number]: Block } = {}
 
 local snapshot: Snapshot? = nil
 local refresh_error: string? = nil
 local fetching = false
-local last_attempt = 0
+local last_attempt = -math.huge
 local loop: TimerHandle? = nil
 
 local function with(node: Node, props: { [string]: any }): Node
@@ -94,39 +111,91 @@ local function limit_tone(limit: Limit): string?
    return nil
 end
 
-local function resolve(selected: string): string
-   if selected == ALL or not snapshot then return ALL end
-   for _, account in snapshot.accounts do
-      if account.id == selected then return selected end
-   end
-   return ALL
-end
-
-local function limit_model(limit: Limit, now_s: number): LimitModel
-   return {
-      id = limit.id,
-      label = limit.label,
-      percent = usage_monitor.percent(limit.used_fraction),
-      amount = limit.amount,
-      reset = usage_monitor.reset(limit.reset_at, now_s),
-      fraction = limit.used_fraction,
-      tone = limit_tone(limit),
-      error = limit.error,
-   }
-end
-
-local function account_model(account: Account, selected: string, now_s: number, ordinal: number): AccountModel
+local function display_name(account: Account, ordinal: number): string
    local provider = usage_monitor.provider_name(account.provider)
    local display = if account.provider == "openai-codex" then "Codex" else provider
    local plan = account.plan
    if plan and string.lower(plan) ~= string.lower(provider) then
       display ..= " " .. string.upper(string.sub(plan, 1, 1)) .. string.sub(plan, 2)
    end
+   return display .. " · Account " .. tostring(ordinal)
+end
+
+local function peak(account: Account): number
+   local highest = -1
+   for _, limit in account.limits do
+      local fraction = limit.used_fraction
+      if fraction and fraction > highest then
+         highest = fraction
+      end
+   end
+   return highest
+end
+
+local function entries(options: Settings, with_hidden: boolean): { Entry }
+   local listed: { Entry } = {}
+   if not snapshot then return listed end
+   local counts: { [string]: number } = {}
+   for index, account in snapshot.accounts do
+      local ordinal = (counts[account.provider] or 0) + 1
+      counts[account.provider] = ordinal
+      if with_hidden or not options.hidden[account.id] then
+         listed[#listed + 1] = { account = account, ordinal = ordinal, index = index, name = display_name(account, ordinal), peak = peak(account) }
+      end
+   end
+   return listed
+end
+
+local function ordered(options: Settings): { Entry }
+   local listed = entries(options, false)
+   if options.order == "usage" then
+      table.sort(listed, function(a: Entry, b: Entry): boolean
+         if a.peak ~= b.peak then return a.peak > b.peak end
+         return a.index < b.index
+      end)
+   elseif options.order == "name" then
+      table.sort(listed, function(a: Entry, b: Entry): boolean
+         local left, right = string.lower(a.name), string.lower(b.name)
+         if left ~= right then return left < right end
+         return a.index < b.index
+      end)
+   end
+   return listed
+end
+
+local function resolve(selected: string, listed: { Entry }): string
+   for _, entry in listed do
+      if entry.account.id == selected then return selected end
+   end
+   return ALL
+end
+
+local function limit_model(limit: Limit, now_s: number, remaining: boolean): LimitModel
+   local used = limit.used_fraction
+   local shown = if used and remaining then math.max(0, 1 - used) else used
+   local percent = usage_monitor.percent(shown)
+   local usage = if percent == "" then "usage unknown" elseif remaining then percent .. " left" else percent .. " used"
+   return {
+      id = limit.id,
+      label = limit.label,
+      percent = percent,
+      usage = usage,
+      amount = limit.amount,
+      reset = usage_monitor.reset(limit.reset_at, now_s),
+      fraction = used,
+      shown = shown,
+      tone = limit_tone(limit),
+      error = limit.error,
+   }
+end
+
+local function account_model(entry: Entry, selected: string, now_s: number, remaining: boolean): AccountModel
+   local account = entry.account
    local current: AccountModel = {
       id = account.id,
       name = usage_monitor.provider_name(account.provider),
       label = account.label,
-      display_name = display .. " · Account " .. tostring(ordinal),
+      display_name = entry.name,
       plan = account.plan,
       age = usage_monitor.age(account.fetched_at, now_s),
       error = account.error,
@@ -137,15 +206,16 @@ local function account_model(account: Account, selected: string, now_s: number, 
       limits = {},
    }
    for _, limit in account.limits do
-      current.limits[#current.limits + 1] = limit_model(limit, now_s)
+      current.limits[#current.limits + 1] = limit_model(limit, now_s, remaining)
    end
    current.empty = #current.limits == 0 and not account.error and not account.disabled
    return current
 end
 
-local function model(block: Block): Model
+local function model(block: Block, options: Settings): Model
    local now_s = os.time()
-   local selected = resolve(block.account)
+   local listed = ordered(options)
+   local selected = resolve(block.account, listed)
    local current: Model = {
       state = "empty",
       message = nil,
@@ -156,6 +226,9 @@ local function model(block: Block): Model
       shown = 0,
       selected = selected,
       compact = block.compact,
+      settings_open = block.settings_open,
+      all_hidden = false,
+      settings = options,
       accounts = {},
    }
 
@@ -172,18 +245,16 @@ local function model(block: Block): Model
    current.generated = usage_monitor.age(snapshot.generated_at, now_s)
    current.stale = refresh_error
    current.total = #snapshot.accounts
-   local counts: { [string]: number } = {}
-   for _, account in snapshot.accounts do
-      local ordinal = (counts[account.provider] or 0) + 1
-      counts[account.provider] = ordinal
-      if selected == ALL or account.id == selected then
-         current.accounts[#current.accounts + 1] = account_model(account, selected, now_s, ordinal)
+   for _, entry in listed do
+      if selected == ALL or entry.account.id == selected then
+         current.accounts[#current.accounts + 1] = account_model(entry, selected, now_s, options.remaining)
       end
    end
    current.shown = #current.accounts
    if current.shown == 0 then
       current.state = "empty"
-      current.message = if current.total == 0 then "No accounts reported." else "That account is no longer reported."
+      current.all_hidden = current.total > 0 and #listed == 0
+      current.message = if current.total == 0 then "No accounts reported." elseif current.all_hidden then "All accounts are hidden." else "That account is no longer reported."
    else
       current.state = "data"
    end
@@ -195,6 +266,9 @@ local function signature(current: Model): string
       current.state,
       current.selected,
       tostring(current.compact),
+      tostring(current.settings_open),
+      tostring(current.all_hidden),
+      settings.signature(current.settings),
       tostring(current.fetching),
       current.message or "",
       current.stale or "",
@@ -221,11 +295,13 @@ local function signature(current: Model): string
             limit.id,
             limit.label,
             limit.percent,
+            limit.usage,
             limit.amount,
             limit.reset,
             limit.tone or "",
             limit.error or "",
             tostring(limit.fraction),
+            tostring(limit.shown),
          }, "\1")
       end
    end
@@ -233,8 +309,9 @@ local function signature(current: Model): string
 end
 
 local function render_all()
+   local options = settings.load()
    for _, block in blocks do
-      local current = signature(model(block))
+      local current = signature(model(block, options))
       if block.rendered ~= current then
          block.rendered = current
          block.context:render()
@@ -270,10 +347,8 @@ end
 
 local function cycle(block: Block, delta: number)
    local order: { string } = { ALL }
-   if snapshot then
-      for _, account in snapshot.accounts do
-         order[#order + 1] = account.id
-      end
+   for _, entry in ordered(settings.load()) do
+      order[#order + 1] = entry.account.id
    end
    local index = 1
    for position, id in order do
@@ -292,6 +367,8 @@ local function act(block: Block, name: string, value: string?)
       block.account = ALL
    elseif name == "compact" then
       block.compact = not block.compact
+   elseif name == "options" then
+      block.settings_open = not block.settings_open
    elseif name == "prev" then
       cycle(block, -1)
    elseif name == "next" then
@@ -299,6 +376,40 @@ local function act(block: Block, name: string, value: string?)
    elseif name == "pick" and value and value ~= "" then
       block.account = value
    end
+end
+
+local function change(block: Block, name: string, value: string, checked: boolean)
+   local options = settings.load()
+   if name == "account" then
+      if checked then
+         options.hidden[value] = nil
+      else
+         options.hidden[value] = true
+      end
+   elseif name == "interval" then
+      local seconds = tonumber(value)
+      if not seconds then return end
+      options.interval_s = seconds
+   elseif name == "usage" then
+      options.remaining = value == "remaining"
+   elseif name == "bar_colors" then
+      options.bar_colors = checked
+   elseif name == "percent_colors" then
+      options.percent_colors = checked
+   elseif name == "show_age" then
+      options.show_age = checked
+   elseif name == "view" then
+      options.compact = value == "compact"
+      block.compact = options.compact
+   elseif name == "order" then
+      options.order = value
+   else
+      return
+   end
+   if not settings.save(options) then
+      block.context:toast("error", "Usage Monitor", "Couldn't save settings.")
+   end
+   render_all()
 end
 
 local function tick()
@@ -313,7 +424,9 @@ local function tick()
       end
    end
    if not next(blocks) then return end
-   if not fetching and tern.now() - last_attempt >= POLL_MS then
+   local interval_ms = settings.load().interval_s * 1000
+   local due = if interval_ms > 0 then tern.now() - last_attempt >= interval_ms else not snapshot and not refresh_error
+   if not fetching and due then
       refresh(false)
    end
    render_all()
@@ -322,19 +435,16 @@ end
 
 local function start_loop()
    if not loop then
-      last_attempt = tern.now() - POLL_MS
       loop = tern.timer(0, tick)
    end
 end
 
 local function selection_label(current: Model): string
-   if current.selected == ALL or not snapshot then return "All" end
-   local counts: { [string]: number } = {}
-   for _, account in snapshot.accounts do
-      counts[account.provider] = (counts[account.provider] or 0) + 1
-      if account.id == current.selected then
-         local name = if account.provider == "openai-codex" then "Codex" else usage_monitor.provider_name(account.provider)
-         return name .. " " .. tostring(counts[account.provider])
+   if current.selected == ALL then return "All" end
+   for _, entry in entries(current.settings, false) do
+      if entry.account.id == current.selected then
+         local name = if entry.account.provider == "openai-codex" then "Codex" else usage_monitor.provider_name(entry.account.provider)
+         return name .. " " .. tostring(entry.ordinal)
       end
    end
    return "All"
@@ -360,8 +470,7 @@ local function short_reset(reset: string): string
 end
 
 local function limit_tooltip(limit: LimitModel): string
-   local percent = if limit.percent ~= "" then limit.percent .. " used" else "usage unknown"
-   local tooltip = limit.label .. " · " .. percent
+   local tooltip = limit.label .. " · " .. limit.usage
    if limit.amount ~= "" then
       tooltip ..= "\n" .. limit.amount
    end
@@ -389,44 +498,45 @@ local function account_problem(account: AccountModel): string?
    return nil
 end
 
-local function meter(limit: LimitModel): Node
+local function meter(limit: LimitModel, colors: boolean): Node
    -- Tern's meter sweeps from 0 whenever it mounts, so draw a plain bar that only eases on change
-   local fraction = limit.fraction
-   if not fraction then return with(ui.text(""), { key = "bar", role = "usage-monitor-usage__bar usage-monitor-usage__bar--unknown", grow = 1 }) end
-   local level = math.clamp(math.floor(fraction * 10), 0, 10)
+   local shown, used = limit.shown, limit.fraction
+   if not shown or not used then return with(ui.text(""), { key = "bar", role = "usage-monitor-usage__bar usage-monitor-usage__bar--unknown", grow = 1 }) end
+   local tint = if colors then "usage-monitor-usage__fill--l" .. tostring(math.clamp(math.floor(used * 10), 0, 10)) else "usage-monitor-usage__fill--plain"
    return ui.el("div", { key = "bar", role = "usage-monitor-usage__bar", grow = 1 }, {
       ui.el("div", {
          key = "fill",
-         role = "usage-monitor-usage__fill usage-monitor-usage__fill--l" .. tostring(level),
-         basis = math.clamp(fraction, 0, 1),
+         role = "usage-monitor-usage__fill " .. tint,
+         basis = math.clamp(shown, 0, 1),
       }),
    })
 end
 
-local function percent_text(limit: LimitModel): Span
+local function percent_text(limit: LimitModel, colors: boolean, long: boolean): Span
    if limit.percent == "" then return ui.span("—", "dim") end
-   local token = tone_token(limit.tone)
-   return if token then ui.span(limit.percent, token) else ui.span(limit.percent)
+   local text = if long then limit.usage else limit.percent
+   local token = if colors then tone_token(limit.tone) else nil
+   return if token then ui.span(text, token) else ui.span(text)
 end
 
-local function compact_limit(limit: LimitModel): Node
+local function compact_limit(limit: LimitModel, options: Settings): Node
    return with(ui.col({
-      with(ui.text({ ui.span(short_limit_label(limit.label) .. " ", "dim"), percent_text(limit) }), {
+      with(ui.text({ ui.span(short_limit_label(limit.label) .. " ", "dim"), percent_text(limit, options.percent_colors, false) }), {
          key = "value",
          role = "usage-monitor-usage__quota-value",
          truncate = "end",
       }),
-      meter(limit),
+      meter(limit, options.bar_colors),
    }), { key = "lim-" .. limit.id, role = "usage-monitor-usage__quota", title = limit_tooltip(limit), grow = 1, basis = 0 })
 end
 
-local function compact_account(account: AccountModel): Node
+local function compact_account(account: AccountModel, options: Settings): Node
    local children: { Node } = {
       with(ui.text(account.display_name), { key = "identity", role = "usage-monitor-usage__name", truncate = "end" }),
    }
    local limits: { Node } = {}
    for _, limit in account.limits do
-      limits[#limits + 1] = compact_limit(limit)
+      limits[#limits + 1] = compact_limit(limit, options)
    end
    if #limits > 0 then
       children[#children + 1] = with(ui.row(limits), { key = "limits", role = "usage-monitor-usage__quotas" })
@@ -443,11 +553,15 @@ local function compact_account(account: AccountModel): Node
    })
 end
 
-local function detail_limit(limit: LimitModel, narrow: boolean): Node
+local function detail_limit(limit: LimitModel, narrow: boolean, options: Settings): Node
+   local pct_role = "usage-monitor-usage__cell-pct"
+   if options.remaining then
+      pct_role ..= " usage-monitor-usage__cell-pct--wide"
+   end
    local cells: { Node } = {
       with(ui.text(ui.span(short_limit_label(limit.label), "dim")), { key = "label", role = "usage-monitor-usage__cell-label" }),
-      meter(limit),
-      with(ui.text(percent_text(limit)), { key = "pct", role = "usage-monitor-usage__cell-pct" }),
+      meter(limit, options.bar_colors),
+      with(ui.text(percent_text(limit, options.percent_colors, options.remaining)), { key = "pct", role = pct_role }),
    }
    if not narrow then
       cells[#cells + 1] = with(ui.text(ui.span(short_reset(limit.reset), "dim")), { key = "reset", role = "usage-monitor-usage__cell-reset" })
@@ -455,7 +569,7 @@ local function detail_limit(limit: LimitModel, narrow: boolean): Node
    return with(ui.row(cells), { key = "lim-" .. limit.id, role = "usage-monitor-usage__limit", title = limit_tooltip(limit) })
 end
 
-local function detail_account(account: AccountModel, narrow: boolean): Node
+local function detail_account(account: AccountModel, narrow: boolean, options: Settings): Node
    local meta = account.age
    if account.reset_credits and account.reset_credits > 0 then
       meta ..= " · " .. tostring(account.reset_credits) .. (if account.reset_credits == 1 then " reset credit" else " reset credits")
@@ -467,7 +581,7 @@ local function detail_account(account: AccountModel, narrow: boolean): Node
       }), { key = "head", role = "usage-monitor-usage__account-head" }),
    }
    for _, limit in account.limits do
-      children[#children + 1] = detail_limit(limit, narrow)
+      children[#children + 1] = detail_limit(limit, narrow, options)
    end
    local problem = account_problem(account)
    if problem then
@@ -511,20 +625,76 @@ local function body(current: Model, narrow: boolean): Node
    end
 
    if current.state == "empty" then
+      local action = if current.all_hidden then link("settings", "Settings", "options", "Choose accounts to show (s)") else link("check", "Check now", "refresh", "Check usage")
       return with(ui.col({
          with(ui.text(ui.span(current.message or "No usage data yet.", "dim")), { key = "message" }),
-         with(ui.row({ link("check", "Check now", "refresh", "Check usage") }), { key = "actions" }),
+         with(ui.row({ action }), { key = "actions" }),
       }), { key = "body", role = "usage-monitor-usage__state" })
    end
 
    local rows: { Node } = {}
    for _, account in current.accounts do
-      rows[#rows + 1] = compact_account(account)
+      rows[#rows + 1] = compact_account(account, current.settings)
       if not current.compact then
-         rows[#rows + 1] = detail_account(account, narrow)
+         rows[#rows + 1] = detail_account(account, narrow, current.settings)
       end
    end
    return with(ui.col(rows), { key = "body", role = "usage-monitor-usage__accounts" })
+end
+
+local function option(key: string, kind: string, name: string, value: string, label: string, checked: boolean): Node
+   return ui.el("label", { key = key, role = "usage-monitor-usage__option" }, {
+      ui.el("input", { key = "control", type = kind, name = name, value = value, checked = checked }),
+      ui.el("span", { key = "text", text = label }),
+   })
+end
+
+local function group(key: string, title: string, options: { Node }, stacked: boolean?): Node
+   local list = if stacked then ui.col(options) else with(ui.row(options), { wrap = true })
+   return with(ui.col({
+      with(ui.text(ui.span(title, "dim")), { key = "title" }),
+      with(list, { key = "options", role = "usage-monitor-usage__options" }),
+   }), { key = key, role = "usage-monitor-usage__group" })
+end
+
+local function settings_page(current: Model): Node
+   local options = current.settings
+   local accounts: { Node } = {}
+   for _, entry in entries(options, true) do
+      local id = entry.account.id
+      accounts[#accounts + 1] = option("acct-" .. id, "checkbox", "account", id, entry.name, not options.hidden[id])
+   end
+   if #accounts == 0 then
+      accounts[1] = with(ui.text(ui.span("No accounts reported yet.", "dim")), { key = "none" })
+   end
+   local intervals: { Node } = {}
+   for _, seconds in settings.INTERVALS do
+      intervals[#intervals + 1] = option("every-" .. tostring(seconds), "radio", "interval", tostring(seconds), INTERVAL_LABELS[seconds], options.interval_s == seconds)
+   end
+   local orders: { Node } = {}
+   for _, order in settings.ORDERS do
+      orders[#orders + 1] = option("order-" .. order, "radio", "order", order, ORDER_LABELS[order], options.order == order)
+   end
+   return with(ui.col({
+      group("accounts", "Accounts", accounts, true),
+      group("refresh", "Refresh every", intervals),
+      group("usage", "Show", {
+         option("used", "radio", "usage", "used", "Used", not options.remaining),
+         option("remaining", "radio", "usage", "remaining", "Remaining", options.remaining),
+      }),
+      group("colors", "Colors", {
+         option("bars", "checkbox", "bar_colors", "on", "Bars", options.bar_colors),
+         option("percent", "checkbox", "percent_colors", "on", "Percentages", options.percent_colors),
+      }),
+      group("view", "Default view", {
+         option("compact", "radio", "view", "compact", "Compact", options.compact),
+         option("detailed", "radio", "view", "detailed", "Detailed", not options.compact),
+      }),
+      group("order", "Order", orders),
+      group("footer", "Footer", {
+         option("age", "checkbox", "show_age", "on", "Time since update", options.show_age),
+      }),
+   }), { key = "settings", role = "usage-monitor-usage__settings" })
 end
 
 local function status_text(current: Model): Node
@@ -533,7 +703,7 @@ local function status_text(current: Model): Node
       text = ui.span("updating…", "dim")
    elseif current.stale then
       text = ui.span("stale", "warning")
-   elseif current.generated then
+   elseif current.generated and current.settings.show_age then
       text = ui.span(current.generated, "dim")
    else
       text = ui.span("")
@@ -542,6 +712,12 @@ local function status_text(current: Model): Node
 end
 
 local function controls(current: Model): Node
+   if current.settings_open then
+      return with(ui.row({
+         with(ui.text("Settings"), { key = "heading", role = "usage-monitor-usage__heading", grow = 1 }),
+         link("done", "Done", "options", "Back to usage (Esc)"),
+      }), { key = "controls", role = "usage-monitor-usage__controls" })
+   end
    return with(ui.row({
       link("prev", "‹", "prev", "Previous account (←)"),
       link("all", selection_label(current), "all", "Show all accounts (a)", current.selected == ALL),
@@ -550,18 +726,23 @@ local function controls(current: Model): Node
       status_text(current),
       link("compact", if current.compact then "Detailed" else "Compact", "compact", "Toggle compact view (c)"),
       link("refresh", "Refresh", "refresh", "Refresh usage (r)"),
+      link("settings", "Settings", "options", "Settings (s)"),
    }), { key = "controls", role = "usage-monitor-usage__controls" })
 end
 
 local function view(block: Block, context: BlockCx): BlockView
-   local current = model(block)
+   local current = model(block, settings.load())
    local narrow = context.cols < NARROW_COLS
    local rows: { Node } = {}
-   local problem = notice(current)
-   if problem then
-      rows[#rows + 1] = problem
+   if current.settings_open then
+      rows[1] = settings_page(current)
+   else
+      local problem = notice(current)
+      if problem then
+         rows[#rows + 1] = problem
+      end
+      rows[#rows + 1] = body(current, narrow)
    end
-   rows[#rows + 1] = body(current, narrow)
 
    local suffix = if current.compact then " usage-monitor-usage__dense" else ""
    return {
@@ -602,12 +783,16 @@ end
 tern.block.define("usage", {
    init = function(context: BlockCx, _args: { string }, saved: any): Block
       local account = ALL
-      local compact = false
+      local compact = settings.load().compact
+      local settings_open = false
       if type(saved) == "table" then
          if type(saved.account) == "string" and saved.account ~= "" then
             account = saved.account
          end
-         compact = saved.compact == true
+         if type(saved.compact) == "boolean" then
+            compact = saved.compact
+         end
+         settings_open = saved.settings_open == true
          if not snapshot then
             snapshot = saved_snapshot(saved)
          end
@@ -616,6 +801,7 @@ tern.block.define("usage", {
          context = context,
          account = account,
          compact = compact,
+         settings_open = settings_open,
       }
       blocks[context.pane] = block
       start_loop()
@@ -647,6 +833,10 @@ tern.block.define("usage", {
          act(block, "refresh")
       elseif key.name == "c" then
          act(block, "compact")
+      elseif key.name == "s" then
+         act(block, "options")
+      elseif (key.name == "escape" or key.name == "esc") and block.settings_open then
+         act(block, "options")
       else
          return false
       end
@@ -656,6 +846,8 @@ tern.block.define("usage", {
    event = function(block: Block, ui_event: UiEvent, _context: BlockCx)
       if ui_event.ev == "action" and type(ui_event.act) == "string" then
          act(block, ui_event.act, ui_event.value)
+      elseif ui_event.ev == "change" and type(ui_event.name) == "string" then
+         change(block, ui_event.name, if type(ui_event.value) == "string" then ui_event.value else "", ui_event.checked == true)
       end
    end,
 
@@ -666,6 +858,12 @@ tern.block.define("usage", {
             account.limits = tern.json.array(account.limits)
          end
       end
-      return { account = block.account, compact = block.compact, snapshot_version = 1, snapshot = snapshot }
+      return {
+         account = block.account,
+         compact = block.compact,
+         settings_open = block.settings_open,
+         snapshot_version = 1,
+         snapshot = snapshot,
+      }
    end,
 })
