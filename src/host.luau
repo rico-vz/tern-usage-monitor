@@ -73,7 +73,6 @@ type Model = {
 local TICK_MS = 1000
 local WARN_FRACTION = 0.75
 local BAD_FRACTION = 0.9
-local NARROW_COLS = 60
 local ALL = "all"
 local INTERVAL_LABELS: { [number]: string } = { [30] = "30s", [60] = "1m", [120] = "2m", [300] = "5m", [900] = "15m", [0] = "Manual" }
 local ORDER_LABELS: { [string]: string } = { omp = "omp order", usage = "Highest usage", name = "Name" }
@@ -398,6 +397,8 @@ local function change(block: Block, name: string, value: string, checked: boolea
       options.percent_colors = checked
    elseif name == "show_age" then
       options.show_age = checked
+   elseif name == "show_resets" then
+      options.show_resets = checked
    elseif name == "view" then
       options.compact = value == "compact"
       block.compact = options.compact
@@ -520,12 +521,18 @@ local function percent_text(limit: LimitModel, colors: boolean, long: boolean): 
 end
 
 local function compact_limit(limit: LimitModel, options: Settings): Node
-   return with(ui.col({
+   local head: { Node } = {
       with(ui.text({ ui.span(short_limit_label(limit.label) .. " ", "dim"), percent_text(limit, options.percent_colors, false) }), {
          key = "value",
          role = "usage-monitor-usage__quota-value",
-         truncate = "end",
       }),
+   }
+   local reset = short_reset(limit.reset)
+   if options.show_resets and reset ~= "" then
+      head[2] = with(ui.text(ui.span(reset, "dim")), { key = "reset", role = "usage-monitor-usage__quota-reset" })
+   end
+   return with(ui.col({
+      with(ui.row(head), { key = "head", role = "usage-monitor-usage__quota-head" }),
       meter(limit, options.bar_colors),
    }), { key = "lim-" .. limit.id, role = "usage-monitor-usage__quota", title = limit_tooltip(limit), grow = 1, basis = 0 })
 end
@@ -553,7 +560,7 @@ local function compact_account(account: AccountModel, options: Settings): Node
    })
 end
 
-local function detail_limit(limit: LimitModel, narrow: boolean, options: Settings): Node
+local function detail_limit(limit: LimitModel, options: Settings): Node
    local pct_role = "usage-monitor-usage__cell-pct"
    if options.remaining then
       pct_role ..= " usage-monitor-usage__cell-pct--wide"
@@ -563,13 +570,13 @@ local function detail_limit(limit: LimitModel, narrow: boolean, options: Setting
       meter(limit, options.bar_colors),
       with(ui.text(percent_text(limit, options.percent_colors, options.remaining)), { key = "pct", role = pct_role }),
    }
-   if not narrow then
+   if options.show_resets then
       cells[#cells + 1] = with(ui.text(ui.span(short_reset(limit.reset), "dim")), { key = "reset", role = "usage-monitor-usage__cell-reset" })
    end
    return with(ui.row(cells), { key = "lim-" .. limit.id, role = "usage-monitor-usage__limit", title = limit_tooltip(limit) })
 end
 
-local function detail_account(account: AccountModel, narrow: boolean, options: Settings): Node
+local function detail_account(account: AccountModel, options: Settings): Node
    local meta = account.age
    if account.reset_credits and account.reset_credits > 0 then
       meta ..= " · " .. tostring(account.reset_credits) .. (if account.reset_credits == 1 then " reset credit" else " reset credits")
@@ -581,7 +588,7 @@ local function detail_account(account: AccountModel, narrow: boolean, options: S
       }), { key = "head", role = "usage-monitor-usage__account-head" }),
    }
    for _, limit in account.limits do
-      children[#children + 1] = detail_limit(limit, narrow, options)
+      children[#children + 1] = detail_limit(limit, options)
    end
    local problem = account_problem(account)
    if problem then
@@ -609,7 +616,7 @@ local function notice(current: Model): Node?
    }), { key = "notice", role = "usage-monitor-usage__notice" })
 end
 
-local function body(current: Model, narrow: boolean): Node
+local function body(current: Model): Node
    if current.state == "loading" then
       return with(ui.col({
          with(ui.text(ui.span("Checking usage…", "dim")), { key = "message" }),
@@ -636,7 +643,7 @@ local function body(current: Model, narrow: boolean): Node
    for _, account in current.accounts do
       rows[#rows + 1] = compact_account(account, current.settings)
       if not current.compact then
-         rows[#rows + 1] = detail_account(account, narrow, current.settings)
+         rows[#rows + 1] = detail_account(account, current.settings)
       end
    end
    return with(ui.col(rows), { key = "body", role = "usage-monitor-usage__accounts" })
@@ -691,7 +698,8 @@ local function settings_page(current: Model): Node
          option("detailed", "radio", "view", "detailed", "Detailed", not options.compact),
       }),
       group("order", "Order", orders),
-      group("footer", "Footer", {
+      group("details", "Details", {
+         option("resets", "checkbox", "show_resets", "on", "Reset times", options.show_resets),
          option("age", "checkbox", "show_age", "on", "Time since update", options.show_age),
       }),
    }), { key = "settings", role = "usage-monitor-usage__settings" })
@@ -730,9 +738,8 @@ local function controls(current: Model): Node
    }), { key = "controls", role = "usage-monitor-usage__controls" })
 end
 
-local function view(block: Block, context: BlockCx): BlockView
+local function view(block: Block): BlockView
    local current = model(block, settings.load())
-   local narrow = context.cols < NARROW_COLS
    local rows: { Node } = {}
    if current.settings_open then
       rows[1] = settings_page(current)
@@ -741,7 +748,7 @@ local function view(block: Block, context: BlockCx): BlockView
       if problem then
          rows[#rows + 1] = problem
       end
-      rows[#rows + 1] = body(current, narrow)
+      rows[#rows + 1] = body(current)
    end
 
    local suffix = if current.compact then " usage-monitor-usage__dense" else ""
@@ -817,8 +824,8 @@ tern.block.define("usage", {
       return "Usage"
    end,
 
-   view = function(block: Block, context: BlockCx): BlockView
-      return view(block, context)
+   view = function(block: Block, _context: BlockCx): BlockView
+      return view(block)
    end,
 
    key = function(block: Block, key: Key, _context: BlockCx): boolean?

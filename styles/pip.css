@@ -22,11 +22,29 @@
 		min-width: 0;
 	}
 
-	[data-role~='usage-monitor-usage__quota-value'] {
+	[data-role~='usage-monitor-usage__quota-head'] {
+		align-items: baseline;
+		column-gap: 6px;
+		flex-wrap: wrap;
+		height: 13px;
+		min-width: 0;
+		overflow: hidden;
+	}
+
+	[data-role~='usage-monitor-usage__quota-value'],
+	[data-role~='usage-monitor-usage__quota-reset'] {
 		font-size: 11px;
 		font-variant-numeric: tabular-nums;
 		line-height: 13px;
-		min-width: 0;
+		white-space: nowrap;
+	}
+
+	[data-role~='usage-monitor-usage__quota-value'] {
+		flex: none;
+	}
+
+	[data-role~='usage-monitor-usage__quota-reset'] {
+		margin-left: auto;
 	}
 }
 

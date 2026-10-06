@@ -33,13 +33,13 @@ With the monitor focused:
 
 Click **Settings** in the panel footer to choose which accounts to show, how often usage refreshes
 (30 seconds to 15 minutes, or manually), whether to show used or remaining quota, whether bars and
-percentages are colored, the default view, the account order and whether the footer shows the time
-since the last update. Settings are shared by every Tern window.
+percentages are colored, the default view, the account order, and whether to show reset times and
+the time since the last update. Settings are shared by every Tern window.
 
 ## Notes
 
 - Refreshing manually also clears omp's usage cache.
-- Hover an account or quota for the full account name, reset time and reset credits.
+- Hover an account or quota for the full account name, amount and reset credits.
 
 If it isn't working, make sure `omp usage --json` works in a terminal and run `tern plugin list`
 to check status.

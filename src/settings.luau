@@ -8,6 +8,7 @@ export type Settings = {
    percent_colors: boolean,
    compact: boolean,
    show_age: boolean,
+   show_resets: boolean,
    order: string,
 }
 
@@ -33,6 +34,7 @@ function settings.defaults(): Settings
       percent_colors = true,
       compact = false,
       show_age = true,
+      show_resets = true,
       order = "omp",
    }
 end
@@ -59,6 +61,7 @@ function settings.load(): Settings
    current.percent_colors = flag(stored.percent_colors, current.percent_colors)
    current.compact = flag(stored.compact, current.compact)
    current.show_age = flag(stored.show_age, current.show_age)
+   current.show_resets = flag(stored.show_resets, current.show_resets)
    return current
 end
 
@@ -82,6 +85,7 @@ function settings.save(current: Settings): boolean
       compact = current.compact,
       show_age = current.show_age,
       order = current.order,
+      show_resets = current.show_resets,
    })
    return ok
 end
@@ -95,6 +99,7 @@ function settings.signature(current: Settings): string
       tostring(current.percent_colors),
       tostring(current.compact),
       tostring(current.show_age),
+      tostring(current.show_resets),
       current.order,
    }, "\1")
 end
