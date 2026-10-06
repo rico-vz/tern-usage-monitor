@@ -1,0 +1,66 @@
+[data-surface='plugin.usage-monitor.usage'] {
+	[data-role~='usage-monitor-usage__summary'] {
+		border-bottom: 1px solid var(--l1);
+		cursor: default;
+		display: none;
+		gap: 2px;
+		min-width: 0;
+		padding: 4px 0;
+
+		&:last-child {
+			border-bottom: none;
+		}
+	}
+
+	[data-role~='usage-monitor-usage__quotas'] {
+		gap: 12px;
+		min-width: 0;
+	}
+
+	[data-role~='usage-monitor-usage__quota'] {
+		gap: 2px;
+		min-width: 0;
+	}
+
+	[data-role~='usage-monitor-usage__quota-value'] {
+		font-size: 11px;
+		font-variant-numeric: tabular-nums;
+		line-height: 13px;
+		min-width: 0;
+	}
+}
+
+/* the host can report the old size after floating, so match the pip hook too */
+[data-surface='plugin.usage-monitor.usage'][data-role~='usage-monitor-usage__dense'],
+.tn-pane.pip [data-surface='plugin.usage-monitor.usage'] {
+	--usage-monitor-pad: 8px;
+	--usage-monitor-bar-height: 3px;
+
+	font-size: 12px;
+
+	&[data-role~='usage-monitor-usage__main'] {
+		padding: 0 var(--usage-monitor-pad) 2px !important;
+	}
+
+	[data-role~='usage-monitor-usage__name'] {
+		line-height: 15px;
+	}
+
+	[data-role~='usage-monitor-usage__summary'] {
+		display: flex;
+	}
+
+	[data-role~='usage-monitor-usage__account'] {
+		display: none;
+	}
+
+	[data-role~='usage-monitor-usage__controls'] {
+		gap: 8px;
+	}
+}
+
+.tn-pane.pip [data-surface='plugin.usage-monitor.usage'] {
+	[data-id='dock.controls.compact'] {
+		display: none;
+	}
+}

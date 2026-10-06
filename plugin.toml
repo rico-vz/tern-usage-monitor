@@ -1,0 +1,14 @@
+schema = 1
+id = "usage-monitor"
+name = "Usage Monitor"
+version = "0.1.0"
+description = "Live omp usage across accounts in a floating or side panel. No active session needed."
+icon = "gauge"
+host = "src/host.luau"
+window = "src/window.luau"
+styles = ["styles/usage.css", "styles/pip.css"]
+
+[[blocks]]
+id = "usage"
+title = "omp usage"
+icon = "gauge"
