@@ -14,8 +14,8 @@ To use it, open the command palette in Tern and run **Usage Monitor: Open floati
 
 For development, use `tern plugin link /path/to/tern-usage-monitor` instead.
 
-Requires `omp` on your `PATH` (or `OMP_USAGE_BIN` set to its path). On Windows it also needs
-PowerShell and Windows Script Host.
+Requires `omp` on your `PATH` (or `OMP_USAGE_BIN` set to its path). On macOS, the omp bundled with Tern
+is used when `OMP_USAGE_BIN` is unset. On Windows it also needs PowerShell and Windows Script Host.
 
 ## Controls
 

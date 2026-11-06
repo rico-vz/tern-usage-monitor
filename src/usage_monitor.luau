@@ -438,6 +438,12 @@ end
 local function omp_bin(): string
    local override = tern.getenv("OMP_USAGE_BIN")
    if type(override) == "string" and override ~= "" then return override end
+   -- The session daemon runs with launchd's PATH (/usr/bin:/bin:...), so a bare "omp" is not found on macOS.
+   local home = tern.getenv("HOME")
+   if tern.runtime.os == "macos" and home then
+      local bundled = home .. "/Library/Application Support/Tern/omp/bin/omp"
+      if tern.fs.exists(bundled) then return bundled end
+   end
    return if tern.runtime.os == "windows" then "omp.exe" else "omp"
 end
 
